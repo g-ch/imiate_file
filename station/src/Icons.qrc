@@ -1,0 +1,34 @@
+<RCC>
+    <qresource prefix="/icon">
+        <file>Icons/1-150.png</file>
+        <file>Icons/1-300.png</file>
+        <file>Icons/2-83-86.png</file>
+        <file>Icons/2-150.png</file>
+        <file>Icons/2-165-172.png</file>
+        <file>Icons/2-300.png</file>
+        <file>Icons/3-150.png</file>
+        <file>Icons/3-150-1.png</file>
+        <file>Icons/3-300.png</file>
+        <file>Icons/11.png</file>
+        <file>Icons/330533-140221122930100.jpg</file>
+        <file>Icons/2254967_100354021_2.jpg</file>
+        <file>Icons/5004926_133912096532_2.jpg</file>
+        <file>Icons/9591503_150610449160_2.jpg</file>
+        <file>Icons/1961620514DigiaQlogo.gif</file>
+        <file>Icons/2011012514020588.png</file>
+        <file>Icons/battery_60_40.png</file>
+        <file>Icons/battery_60_40_1.png</file>
+        <file>Icons/bridge_100_100.png</file>
+        <file>Icons/fengji2_100_100.png</file>
+        <file>Icons/fengji_100_100.png</file>
+        <file>Icons/sanfrancisco_bridge.png</file>
+        <file>Icons/sanfrancisco_bridge_100_100.png</file>
+        <file>Icons/yepian3_100_100.png</file>
+        <file>Icons/yepian_100_100.png</file>
+        <file>Icons/grass-720x540-2.png</file>
+        <file>Icons/grass-960x720.png</file>
+        <file>Icons/grass-960x720-2.png</file>
+        <file>Icons/grass-1080x810.png</file>
+        <file>Icons/grass-720x540.png</file>
+    </qresource>
+</RCC>
