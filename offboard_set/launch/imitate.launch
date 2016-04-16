@@ -9,4 +9,5 @@
         </node>
         <node name="status_imitate" pkg="offboard_set" type="status_imitate" output="screen">
         </node>
+        <node name="record" pkg="rosbag" type="record" args="record -O /home/cc/rec.bag /mavros/state /offboard/setpoints_raw /offboard/setpoints_local /crop_dist /laser_send"/>
 </launch>

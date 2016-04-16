@@ -11,6 +11,8 @@
 #include <mavros/State.h>
 #include "std_msgs/Float32.h"
 #include "mavros_extras/PositionSetpoint.h"
+#include "mavros_extras/LaserDistance.h"
+#define Pi 3.1415926
 
 using Eigen::MatrixXd;
 
@@ -19,8 +21,12 @@ geometry_msgs::Vector3 v;
 sensor_msgs::Imu a;
 mavros::State m;
 std_msgs::Float32 h;
+mavros_extras::LaserDistance o;
+
 
 int counter = 0;
+float p_last[3];
+float p_last_2[3];
 
 void imitate_p(const mavros_extras::PositionSetpoint msg);
 void imitate_v(const mavros::Vector3 msg);
@@ -28,7 +34,7 @@ void imitate_a(const mavros::Vector3 msg);
 
 int main(int argc, char **argv)  
 {
-	ros::init(argc, argv, "status_imitate");  
+    ros::init(argc, argv, "status_imitate");  
 
     ros::NodeHandle nh;
     ros::Subscriber p_sub = nh.subscribe("/offboard/setpoints_local", 500, imitate_p);
@@ -40,18 +46,29 @@ int main(int argc, char **argv)
     ros::Publisher a_pub = nh.advertise<sensor_msgs::Imu>("offboard/acceleration_imitate", 500);
     ros::Publisher m_pub = nh.advertise<mavros::State>("offboard/mode_imitate", 500);
     ros::Publisher lidar_pub = nh.advertise<std_msgs::Float32>("offboard/lidar_imitate", 500);
+    ros::Publisher obs_pub = nh.advertise<mavros_extras::LaserDistance>("/laser_send", 500);
 
     p.pose.position.x = 1;
     p.pose.position.y = 0;
     p.pose.position.z = 3;
+
+    float yaw = Pi/2;
+    p.pose.orientation.x = 0.0;
+    p.pose.orientation.y = 0.0;
+    p.pose.orientation.z = sin(yaw/2);
+    p.pose.orientation.w = cos(yaw/2);
+
     v.x = 0;
     v.y = 0;
     v.z = 0;
     a.linear_acceleration.x = 0;
-	a.linear_acceleration.y = 0;
-	a.linear_acceleration.z = 0;
+    a.linear_acceleration.y = 0;
+    a.linear_acceleration.z = 0;
 
-    h.data = 2;  //start height
+    o.min_distance = 600;
+    o.angle = 0;
+
+    h.data = -2;  //start height
 
     m.mode = "MANUAL";
 
@@ -62,12 +79,29 @@ int main(int argc, char **argv)
     	p_pub.publish(p);
     	v_pub.publish(v);
     	a_pub.publish(a);
-        m_pub.publish(m);
-        lidar_pub.publish(h);
+
+        if(counter % 20 == 1) m_pub.publish(m);
+        if(counter % 5 == 1)
+        {
+            lidar_pub.publish(h);
+            obs_pub.publish(o);
+        }
 
         counter ++;
         if(counter > 200) m.mode = "OFFBOARD";
 
+        if(counter > 280 && counter < 500){
+        	o.min_distance = 200;
+            o.angle = 120;
+        }
+        else
+        {
+            o.min_distance = 600;
+            o.angle = 0;
+        }
+
+        if(counter % 3 == 1)h.data -= 0.01;
+        if(h.data < -2.17) h.data = -2;
     	ros::spinOnce();  
     	loop_rate.sleep();
     }
@@ -77,10 +111,14 @@ int main(int argc, char **argv)
 
 void imitate_p(const mavros_extras::PositionSetpoint msg)
 {
-    p.pose.position.x = msg.px;
-    p.pose.position.y = msg.py;
-    p.pose.position.z = msg.ph;
-    h.data = msg.ph;
+    p.pose.position.x = p_last_2[0];
+    p.pose.position.y = p_last_2[1];
+    p_last_2[0] = p_last[0];
+    p_last_2[1] = p_last[1];
+    p_last[0] = msg.px;
+    p_last[1] = msg.py;
+
+    p.pose.position.z = 2;
 }
 void imitate_v(const mavros::Vector3 msg)
 {

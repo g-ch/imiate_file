@@ -16,7 +16,7 @@ int main(int argc, char **argv)
   ros::Publisher offboard_pub = nh.advertise<geometry_msgs::PoseStamped>("offboard/setpoints", 5);  
   ros::Subscriber setpoint_sub = nh.subscribe("/offboard/setpoints_local", 5, chatterCallback_receive_setpoint_local);
 
-  ros::Rate loop_rate(16);
+  ros::Rate loop_rate(10);
   while (ros::ok())  
   {   	
     if(msg.pose.position.z > -1994) offboard_pub.publish(msg);

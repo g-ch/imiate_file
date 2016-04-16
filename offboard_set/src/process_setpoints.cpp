@@ -16,7 +16,7 @@ using namespace Eigen;
 void chatterCallback_local_position(const geometry_msgs::PoseStamped &msg);
 void chatterCallback_mode(const mavros::State &msg);
 void chatterCallback_receive_setpoint_raw(const mavros_extras::PositionSetpoint &msg);
-void chatterCallback_extra_function(const mavros_extras::ExtraFunctionReceiver &msg);
+//void chatterCallback_extra_function(const mavros_extras::ExtraFunctionReceiver &msg);
 void chatterCallback_obstacle(const mavros_extras::LaserDistance &msg);  //add by CJ
 void chatterCallback_crop_distance(const std_msgs::Float32 &msg);  //add by CJ
 void chatterCallback_fly_direction(const mavros_extras::FlyDirection &msg);  //add by CJ
@@ -53,17 +53,19 @@ float distance(float x0, float y0, float x1, float y1);
 
 
 bool offboard_ready = false;
-bool obstacle_avoid_enable = false;  //add by CJ
-bool obstacle_avoid_height_enable = false;  //add by CJ
-bool obstacle_avoid_auto_enable = false;  //add by CJ
+bool obstacle_avoid_enable = true;  //add by CJ
+bool obstacle_avoid_height_enable = true;  //add by CJ
+bool obstacle_avoid_auto_enable = true;  //add by CJ
 bool auto_avoid_processing = false; //add by CJ
-bool manual_avoid = false;  //add by CJ 
+bool manual_avoid = false;  //add by CJ
 bool fly_processing = false;  //add by CJ
 bool fly_direction_enable = false; //add by CJ
-bool laser_fly_height_enable = false;
+bool laser_fly_height_enable = true;
 bool height_lidar_running = false;
 bool obstacle_lidar_running = false;
-
+bool height_lidar_check_flag = false;
+bool obstacle_lidar_check_flag = false;
+int timer_counter = 0;
 
 Vector3f local_pos(0.0,0.0,0.0);  //add by CJ
 Vector3f body_pos(0.0,0.0,0.0);  //add by CJ
@@ -97,24 +99,16 @@ float new_setpoint_ph = 0.0;
 float new_setpoint_yaw = 0.0;
 
 float start_pos[2] = {0.0,0.0};
-float start_pos_record[2] = {0.0,0.0};
 float ended_pos[2] = {0.0,0.0};
-
-//float start_ph = 0.0;
-//float start_yaw = 0.0;
+float start_ph = 0.0;
+float start_yaw = 0.0;
+bool start_bool = true;
 
 bool different_sp_rcv = false;
 bool mode_change_flag_1 = false;
 bool mode_change_flag_2 = false;
-bool mode_2_offboard = false;
-
-bool height_lidar_check_flag = false;
-bool obstacle_lidar_check_flag = false;
-int timer_counter = 0;
-
-float processed_setpoint_ph_last = -1000.0;
-
 mavros_extras::PositionSetpoint processed_setpoint;
+std_msgs::Float32 standard_height;
 
 int main(int argc, char **argv)  
 {  
@@ -124,11 +118,12 @@ int main(int argc, char **argv)
   ros::NodeHandle nh;  
   
   ros::Publisher offboard_pub = nh.advertise<mavros_extras::PositionSetpoint>("offboard/setpoints_local", 2);  
+  ros::Publisher standard_height_pub = nh.advertise<std_msgs::Float32>("offboard/standard_height", 2);
 
   ros::Subscriber setpoint_sub = nh.subscribe("/offboard/setpoints_raw", 2, chatterCallback_receive_setpoint_raw);
   ros::Subscriber localposition_sub = nh.subscribe("/offboard/position_imitate", 2,chatterCallback_local_position);
   ros::Subscriber mode_sub = nh.subscribe("/offboard/mode_imitate", 1,chatterCallback_mode);
-  ros::Subscriber extrafunction_sub = nh.subscribe("/mavros/extra_function_receiver/extra_function_receiver", 1,chatterCallback_extra_function);
+ // ros::Subscriber extrafunction_sub = nh.subscribe("/mavros/extra_function_receiver/extra_function_receiver", 1,chatterCallback_extra_function);
   ros::Subscriber obstacle_sub = nh.subscribe("/laser_send",1,chatterCallback_obstacle);
   ros::Subscriber crop_distance_sub = nh.subscribe("/offboard/lidar_imitate",1,chatterCallback_crop_distance);
   ros::Subscriber fly_direction_sub = nh.subscribe("/offboard/direction", 1,chatterCallback_fly_direction);
@@ -151,152 +146,168 @@ int main(int argc, char **argv)
   VectorXf nodes_v = VectorXf::Zero(8);
 
   Matrix<float, 3, 3> Paras_matrix(3,3);
-  while (ros::ok())  
-  {  
-
-  	if(new_setpoint_ph  > -1001.0 && new_setpoint_ph < -999.0)
+  while (ros::ok())
     {
-      processed_setpoint.px = current_px;
-      processed_setpoint.py = current_py;
-      processed_setpoint.ph = current_ph;
-      processed_setpoint.yaw = current_yaw;
+      //tell the standard height, measured by barometer or rplidar
+      if(laser_fly_height_enable && height_lidar_running) standard_height.data = laser_height;
+      else standard_height.data = current_ph;
+      standard_height_pub.publish(standard_height);
 
-    }
-    else if(new_setpoint_ph < -1994)
-    {
-      processed_setpoint.px = new_setpoint_px;
-      processed_setpoint.py = new_setpoint_py;
-      processed_setpoint.ph = new_setpoint_ph;
-      processed_setpoint.yaw = new_setpoint_yaw;
-    }
-    else  //ph==-2 included, this will process in publish_setpoints.cpp
-    {
-      if(different_sp_rcv){//traj init
-        different_sp_rcv = false;
-
-        float length = distance(start_pos[0], start_pos[1], new_setpoint_px, new_setpoint_py);
-        
-        time2fly = length/avrg_vel;
-        avrg_vx = (ended_pos[0] - current_px) / time2fly;
-        avrg_vy = (ended_pos[1] - current_py) / time2fly;
-        
-        current_t = 0;
-
-        
-
-        stage = 1;
-        nodes_t = VectorXf::Zero(8);
-        nodes_p = VectorXf::Zero(8);
-        nodes_v = VectorXf::Zero(8);
-        float dx = ended_pos[0] - start_pos[0];
-        float dy = ended_pos[1] - start_pos[1];
-        theta = atan2(dy, dx);
-        method = trapezoidalTraj(0, length, 
-            MAX_v, MAX_pitch_deg, MAX_j,
-            nodes_t, nodes_v, nodes_p, &max_a);
-        std::cout << "\nnodes_t:\n" << nodes_t << std::endl;
-        std::cout << "\nnodes_p:\n" << nodes_p << std::endl;
-        std::cout << "\nnodes_v:\n" << nodes_v << std::endl;
-        if(method == 1){//non const vel
-          trajectory_Paras_generation_i(0, start_pos[0], new_setpoint_px,time2fly, Paras_matrix);
-          trajectory_Paras_generation_i(1, start_pos[1], new_setpoint_py,time2fly, Paras_matrix);
-            ROS_INFO("no const vel");
-        }
-        else{
-            ROS_INFO("exists const vel");
-        }
-      }//end of init
-      if(method == 1){//non const vel
-        if(current_t < time2fly){
-          processed_setpoint.px = p_optimal_calculate(0,Paras_matrix(0,0),Paras_matrix(0,1),Paras_matrix(0,2),current_t, start_pos[0]); 
-          processed_setpoint.py = p_optimal_calculate(1,Paras_matrix(1,0),Paras_matrix(1,1),Paras_matrix(1,2),current_t, start_pos[1]);
-        }
-        else{
-          processed_setpoint.px = new_setpoint_px;
-          processed_setpoint.py = new_setpoint_py;
-        }
-      }
-      else{//trapezoidal
-        
-        if(stage < 8){
-          if(current_t > nodes_t(stage)){
-            stage++;
-          }
-          // float j = jerkPlan(MAX_j, stage);
-          // float a = accPlan(MAX_j, max_a, current_t, stage, nodes_t);
-          // float v = velPlan(MAX_j, max_a, current_t, stage, nodes_t, nodes_v);
-          float p = posPlan(MAX_j, max_a, current_t, stage, nodes_t, nodes_v, nodes_p);
-          // float j_x = j * cos(theta);
-          // float j_y = j * sin(theta);
-//          float a_x = a * cos(theta);
-//          float a_y = a * sin(theta);
-//          float v_x = v * cos(theta);
-//          float v_y = v * sin(theta);
-          float p_x = p * cos(theta) + start_pos[0];
-          float p_y = p * sin(theta) + start_pos[1];
-//          ROS_INFO("t: %f stage: %d\njx: %f ax: %f vx: %f px: %f\njy: %f ay: %f vy: %f py: %f\n", 
-//            current_t, stage, 
-//            j_x, a_x, v_x, p_x, 
-//            j_y, a_y, v_y, p_y);
-          processed_setpoint.px = p_x;
-          processed_setpoint.py = p_y;
-        }
-        else{
-          processed_setpoint.px = new_setpoint_px;
-          processed_setpoint.py = new_setpoint_py;
-
-        }
-      }
-//      ROS_INFO("method: %d x_sp: %f y_sp: %f", method, processed_setpoint.px, processed_setpoint.py);
-//      processed_setpoint.px = new_setpoint_px;
-//      processed_setpoint.py = new_setpoint_py;
-//      processed_setpoint.ph = new_setpoint_ph;
-//      processed_setpoint.yaw = new_setpoint_yaw;
-      /*set height*/
-        if(laser_fly_height_enable && height_lidar_running) 
+      if(new_setpoint_yaw < -100)
+      {
+        if(start_bool)
         {
-          processed_setpoint.ph = new_setpoint_ph - laser_height + current_ph ;
-          processed_setpoint_ph_last = processed_setpoint.ph;
+          start_yaw = current_yaw;
+          start_bool = false;
         }
-        else if(laser_fly_height_enable && processed_setpoint_ph_last > -900)
-           processed_setpoint.ph = processed_setpoint_ph_last;
-        else processed_setpoint.ph = new_setpoint_ph; 
 
+        processed_setpoint.px = current_px;
+        processed_setpoint.py = current_py;
+        processed_setpoint.yaw = start_yaw;
+
+        start_pos[0] = current_px;
+        start_pos[1] = current_py;
+        ended_pos[0] = current_px;
+        ended_pos[1] = current_py;
+        //take off height set
+
+        if(new_setpoint_ph - standard_height.data > 0.3) processed_setpoint.ph = current_ph + 0.4;
+        else if(standard_height.data - new_setpoint_ph > 0.3) processed_setpoint.ph = current_ph - 0.3;
+        else processed_setpoint.ph = standard_height.data;
+
+      }
+      else if(new_setpoint_ph  > -1001.0 && new_setpoint_ph < -999.0)
+      {
+        processed_setpoint.px = current_px;
+        processed_setpoint.py = current_py;
+        processed_setpoint.ph = current_ph;
+        processed_setpoint.yaw = current_yaw;
+
+        start_bool = true;
+      }
+      else if(new_setpoint_ph < -1994)
+      {
+        processed_setpoint.px = new_setpoint_px;
+        processed_setpoint.py = new_setpoint_py;
+        processed_setpoint.ph = new_setpoint_ph;
         processed_setpoint.yaw = new_setpoint_yaw;
+        start_bool = true;
+      }
+      else  //ph==-2 included, this will process in publish_setpoints.cpp
+      {
+        if(different_sp_rcv){//traj init
+          different_sp_rcv = false;
 
-    }//end of if(new_setpoint_ph  > -1.5 && new_setpoint_ph < 0)
-    current_t += 1.0 / LOOP_RATE_PLAN;
+          float length = distance(start_pos[0], start_pos[1], new_setpoint_px, new_setpoint_py);
 
-    //obstacle avoidance by CJ
-    if(manual_avoid)
-    {
-        rotate(-current_yaw, local_pos, body_pos);
-        body_pos_stop(0) = body_pos(0) - (300.0 - obstacle_distance) / 100.0f * cosf(obstacle_angle / 180.0 * Pi);
-        body_pos_stop(1) = body_pos(1) + (300.0 - obstacle_distance) / 100.0f * sinf(obstacle_angle / 180.0 * Pi);
-        rotate(-current_yaw, body_pos_stop, local_pos_stop);
-        stop_px = local_pos_stop(0);
-        stop_py = local_pos_stop(1);
-        stop_ph = current_ph;
-        stop_yaw = current_yaw;
+          time2fly = length/avrg_vel;
+          avrg_vx = (ended_pos[0] - current_px) / time2fly;
+          avrg_vy = (ended_pos[1] - current_py) / time2fly;
 
-        while(offboard_ready && ros::ok())
-        {
-          processed_setpoint.px = stop_px;
-          processed_setpoint.py = stop_py;
-          processed_setpoint.ph = stop_ph;
-          processed_setpoint.yaw = stop_yaw;
-          
-          offboard_pub.publish(processed_setpoint);
-          ros::spinOnce();  
-          loop_rate.sleep();
-        }       
+          current_t = 0;
+
+          stage = 1;
+          nodes_t = VectorXf::Zero(8);
+          nodes_p = VectorXf::Zero(8);
+          nodes_v = VectorXf::Zero(8);
+          float dx = ended_pos[0] - start_pos[0];
+          float dy = ended_pos[1] - start_pos[1];
+          theta = atan2(dy, dx);
+          method = trapezoidalTraj(0, length, MAX_v, MAX_pitch_deg, MAX_j,nodes_t, nodes_v, nodes_p, &max_a);
+          std::cout << "\nnodes_t:\n" << nodes_t << std::endl;
+          std::cout << "\nnodes_p:\n" << nodes_p << std::endl;
+          std::cout << "\nnodes_v:\n" << nodes_v << std::endl;
+          if(method == 1){//non const vel
+            trajectory_Paras_generation_i(0, start_pos[0], new_setpoint_px,time2fly, Paras_matrix);
+            trajectory_Paras_generation_i(1, start_pos[1], new_setpoint_py,time2fly, Paras_matrix);
+
+          }
+        }//end of init
+        if(method == 1){//non const vel
+          if(current_t < time2fly){
+            processed_setpoint.px = p_optimal_calculate(0,Paras_matrix(0,0),Paras_matrix(0,1),Paras_matrix(0,2),current_t, start_pos[0]);
+            processed_setpoint.py = p_optimal_calculate(1,Paras_matrix(1,0),Paras_matrix(1,1),Paras_matrix(1,2),current_t, start_pos[1]);
+          }
+          else{
+            processed_setpoint.px = new_setpoint_px;
+            processed_setpoint.py = new_setpoint_py;
+          }
+        }
+        else{//trapezoidal
+
+          if(stage < 8){
+            if(current_t > nodes_t(stage)){
+              stage++;
+            }
+            // float j = jerkPlan(MAX_j, stage);
+            // float a = accPlan(MAX_j, max_a, current_t, stage, nodes_t);
+            // float v = velPlan(MAX_j, max_a, current_t, stage, nodes_t, nodes_v);
+            float p = posPlan(MAX_j, max_a, current_t, stage, nodes_t, nodes_v, nodes_p);
+            // float j_x = j * cos(theta);
+            // float j_y = j * sin(theta);
+  //          float a_x = a * cos(theta);
+  //          float a_y = a * sin(theta);
+  //          float v_x = v * cos(theta);
+  //          float v_y = v * sin(theta);
+            float p_x = p * cos(theta) + start_pos[0];
+            float p_y = p * sin(theta) + start_pos[1];
+  //          ROS_INFO("t: %f stage: %d\njx: %f ax: %f vx: %f px: %f\njy: %f ay: %f vy: %f py: %f\n",
+  //            current_t, stage,
+  //            j_x, a_x, v_x, p_x,
+  //            j_y, a_y, v_y, p_y);
+            processed_setpoint.px = p_x;
+            processed_setpoint.py = p_y;
+          }
+          else{
+            processed_setpoint.px = new_setpoint_px;
+            processed_setpoint.py = new_setpoint_py;
+
+          }
+        }
+  //      ROS_INFO("method: %d x_sp: %f y_sp: %f", method, processed_setpoint.px, processed_setpoint.py);
+  //      processed_setpoint.px = new_setpoint_px;
+  //      processed_setpoint.py = new_setpoint_py;
+  //      processed_setpoint.ph = new_setpoint_ph;
+  //      processed_setpoint.yaw = new_setpoint_yaw;
+        /*set height*/
+          if(laser_fly_height_enable && height_lidar_running) processed_setpoint.ph = new_setpoint_ph - laser_height + current_ph ;
+          else processed_setpoint.ph = new_setpoint_ph;
+
+          processed_setpoint.yaw = new_setpoint_yaw;
+
+      }//end of if(new_setpoint_ph  > -1.5 && new_setpoint_ph < 0)
+      current_t += 1.0 / LOOP_RATE_PLAN;
+
+      //obstacle avoidance by CJ
+      if(manual_avoid)
+      {
+          rotate(-current_yaw, local_pos, body_pos);
+          body_pos_stop(0) = body_pos(0) - (300.0 - obstacle_distance) / 100.0f * cosf(obstacle_angle / 180.0 * Pi);
+          body_pos_stop(1) = body_pos(1) + (300.0 - obstacle_distance) / 100.0f * sinf(obstacle_angle / 180.0 * Pi);
+          rotate(current_yaw, body_pos_stop, local_pos_stop);
+          stop_px = local_pos_stop(0);
+          stop_py = local_pos_stop(1);
+          stop_ph = current_ph;
+          stop_yaw = current_yaw;
+
+          while(offboard_ready && ros::ok())
+          {
+            processed_setpoint.px = stop_px;
+            processed_setpoint.py = stop_py;
+            processed_setpoint.ph = stop_ph;
+            processed_setpoint.yaw = stop_yaw;
+
+            offboard_pub.publish(processed_setpoint);
+            ros::spinOnce();
+            loop_rate.sleep();
+          }
+      }
+
+      offboard_pub.publish(processed_setpoint);
+      ros::spinOnce();
+      loop_rate.sleep();
     }
-
-    offboard_pub.publish(processed_setpoint);
-    ros::spinOnce();  
-    loop_rate.sleep();  
-  }
-  return 0;  
+    return 0;
 }  
 float distance(float x0, float y0, float x1, float y1)
 {
@@ -317,113 +328,109 @@ int float_near(float a, float b, float dif)
 }
 void chatterCallback_receive_setpoint_raw(const mavros_extras::PositionSetpoint &msg)
 {
-//add by CJ
-  if(auto_avoid_processing){
-    if(auto_avoid_count == 0){
-      obstacle_avoid_trajectory << 0.0, 0.0,     
-     		  0.0, 0.0, 
-     		  0.0, 0.0, 
-     		  0.0, 0.0;
-      obstacle_avoid_trajectory_generation(local_pos, next_pos, obstacle_avoid_trajectory);
-      auto_avoid_count++;
-    }
-    if(auto_avoid_count == 1){
-      if(!fly_processing){
-        start_pos[0] = current_px;
-        start_pos[1] = current_py;
-        ended_pos[0] = obstacle_avoid_trajectory(1,0);
-        ended_pos[1] = obstacle_avoid_trajectory(1,1);
-        new_setpoint_px = ended_pos[0];
-        new_setpoint_py = ended_pos[1];
-        different_sp_rcv = true;
-        fly_processing = true;
-      }
-      else{
-        if(float_near(current_px, new_setpoint_px, 0.6) && float_near(current_py, new_setpoint_py, 0.6)){
+    //add by CJ
+      if(auto_avoid_processing){
+        if(auto_avoid_count == 0){
+          obstacle_avoid_trajectory << 0.0, 0.0,
+              0.0, 0.0,
+              0.0, 0.0,
+              0.0, 0.0;
+          obstacle_avoid_trajectory_generation(local_pos, next_pos, obstacle_avoid_trajectory);
           auto_avoid_count++;
-          fly_processing = false;
         }
-      }  
-    }
-    if(auto_avoid_count == 2){
-      if(!fly_processing){
-        start_pos[0] = obstacle_avoid_trajectory(1,0);
-        start_pos[1] = obstacle_avoid_trajectory(1,1);
-        ended_pos[0] = obstacle_avoid_trajectory(2,0);
-        ended_pos[1] = obstacle_avoid_trajectory(2,1);
-        new_setpoint_px = ended_pos[0];
-        new_setpoint_py = ended_pos[1];
-        different_sp_rcv = true;
-        fly_processing = true;
-      }else{
-        if(float_near(current_px, new_setpoint_px, 0.6) && float_near(current_py, new_setpoint_py, 0.6)){
-          auto_avoid_count++;
-          fly_processing = false;
+        if(auto_avoid_count == 1){
+          if(!fly_processing){
+            start_pos[0] = current_px;
+            start_pos[1] = current_py;
+            ended_pos[0] = obstacle_avoid_trajectory(1,0);
+            ended_pos[1] = obstacle_avoid_trajectory(1,1);
+            new_setpoint_px = ended_pos[0];
+            new_setpoint_py = ended_pos[1];
+            different_sp_rcv = true;
+            fly_processing = true;
+          }
+          else{
+            if(float_near(current_px, new_setpoint_px, 0.6) && float_near(current_py, new_setpoint_py, 0.6)){
+              auto_avoid_count++;
+              fly_processing = false;
+            }
+          }
         }
-      }  
-    }
-    if(auto_avoid_count == 3){
-      if(!fly_processing){
-        start_pos[0] = obstacle_avoid_trajectory(2,0);
-        start_pos[1] = obstacle_avoid_trajectory(2,1);
-        ended_pos[0] = obstacle_avoid_trajectory(3,0);
-        ended_pos[1] = obstacle_avoid_trajectory(3,1);
-        new_setpoint_px = ended_pos[0];
-        new_setpoint_py = ended_pos[1];
-        different_sp_rcv = true;
-        fly_processing = true;
-      }else{
-        if(float_near(current_px, new_setpoint_px, 0.6) && float_near(current_py, new_setpoint_py, 0.6)){
-          auto_avoid_count++;
-          fly_processing = false;
+        if(auto_avoid_count == 2){
+          if(!fly_processing){
+            start_pos[0] = obstacle_avoid_trajectory(1,0);
+            start_pos[1] = obstacle_avoid_trajectory(1,1);
+            ended_pos[0] = obstacle_avoid_trajectory(2,0);
+            ended_pos[1] = obstacle_avoid_trajectory(2,1);
+            new_setpoint_px = ended_pos[0];
+            new_setpoint_py = ended_pos[1];
+            different_sp_rcv = true;
+            fly_processing = true;
+          }else{
+            if(float_near(current_px, new_setpoint_px, 0.6) && float_near(current_py, new_setpoint_py, 0.6)){
+              auto_avoid_count++;
+              fly_processing = false;
+            }
+          }
         }
-      } 
-    }
-    if(auto_avoid_count == 4){
-      auto_avoid_processing = false;    //if(laser_fly_height_enable && height_lidar_running) new_setpoint_ph = msg.ph - laser_height + current_ph ;
-    //else new_setpoint_ph = msg.ph;
-      auto_avoid_count = 0;
-    }
-    new_setpoint_ph = msg.ph;
-    new_setpoint_yaw = msg.yaw;
-    
-  }
+        if(auto_avoid_count == 3){
+          if(!fly_processing){
+            start_pos[0] = obstacle_avoid_trajectory(2,0);
+            start_pos[1] = obstacle_avoid_trajectory(2,1);
+            ended_pos[0] = obstacle_avoid_trajectory(3,0);
+            ended_pos[1] = obstacle_avoid_trajectory(3,1);
+            new_setpoint_px = ended_pos[0];
+            new_setpoint_py = ended_pos[1];
+            different_sp_rcv = true;
+            fly_processing = true;
+          }else{
+            if(float_near(current_px, new_setpoint_px, 0.6) && float_near(current_py, new_setpoint_py, 0.6)){
+              auto_avoid_count++;
+              fly_processing = false;
+            }
+          }
+        }
+        if(auto_avoid_count == 4){
+          auto_avoid_processing = false;
+          auto_avoid_count = 0;
+        }
+        new_setpoint_ph = msg.ph;
+        new_setpoint_yaw = msg.yaw;
 
-  else{
-    if(offboard_ready)
-    {
-      if(float_near(msg.px, new_setpoint_px, 0.05) && float_near(msg.py, new_setpoint_py, 0.05))// && float_near(msg.ph, new_setpoint_ph, 0.05))
-      {
-        //a same sp is rcved      
-      }
-      else{//a new sp
-        start_pos[0] = ended_pos[0];
-        start_pos[1] = ended_pos[1];
-        ended_pos[0] = msg.px;
-        ended_pos[1] = msg.py;
-        ROS_INFO("start_pos %f %f\n ended_pos %f %f",start_pos[0],start_pos[1],ended_pos[0],ended_pos[1]);
-        //start_ph = current_ph;
-        //start_yaw = current_yaw;
-        different_sp_rcv = true;
-      }
-    }
-    else//not offboard ready
-    {
-      start_pos[0] = current_px;
-      start_pos[1] = current_py;
-      ended_pos[0] = current_px;
-      ended_pos[1] = current_py;
-    }    
-    new_setpoint_px = msg.px;
-    new_setpoint_py = msg.py;
+      }else{
+        if(offboard_ready)
+        {
+          if(float_near(msg.px, new_setpoint_px, 0.05) && float_near(msg.py, new_setpoint_py, 0.05))// && float_near(msg.ph, new_setpoint_ph, 0.05))
+          {
+            //a same sp is rcved
+          }
+          else{//a new sp
+            start_pos[0] = ended_pos[0];
+            start_pos[1] = ended_pos[1];
+            ended_pos[0] = msg.px;
+            ended_pos[1] = msg.py;
+            //start_ph = current_ph;
+            //start_yaw = current_yaw;
+            different_sp_rcv = true;
+          }
+        }
+        else//not offboard ready
+        {
+          start_pos[0] = current_px;
+          start_pos[1] = current_py;
+          ended_pos[0] = current_px;
+          ended_pos[1] = current_py;
+        }
+        new_setpoint_px = msg.px;
+        new_setpoint_py = msg.py;
 
-    new_setpoint_ph = msg.ph;
-    new_setpoint_yaw = msg.yaw;
-    
-    next_pos(0) = msg.px;    //add by CJ
-    next_pos(1) = msg.py;    //add by CJ
-    next_pos(2) = 0.0;       //add by CJ
-  }//offboard ready else end
+        new_setpoint_ph = msg.ph;
+        new_setpoint_yaw = msg.yaw;
+
+        next_pos(0) = msg.px;    //add by CJ
+        next_pos(1) = msg.py;    //add by CJ
+        next_pos(2) = 0.0;       //add by CJ
+      }//offboard ready else end
 }
 
 void chatterCallback_local_position(const geometry_msgs::PoseStamped &msg)
@@ -448,50 +455,50 @@ void chatterCallback_local_position(const geometry_msgs::PoseStamped &msg)
 
 void chatterCallback_mode(const mavros::State &msg) //from heartbeat, 5hz
 {
-  if(msg.mode=="OFFBOARD") 
-    {
-      offboard_ready=true;
-      mode_change_flag_1 = true;
-    }
-  else 
-    {
-      offboard_ready=false;
-      mode_change_flag_1 = false;
-      mode_change_flag_2 = true;   
-    }
+    if(msg.mode=="OFFBOARD")
+        {
+          offboard_ready=true;
+          mode_change_flag_1 = true;
+        }
+      else
+        {
+          offboard_ready=false;
+          mode_change_flag_1 = false;
+          mode_change_flag_2 = true;
+        }
 
-  if(mode_change_flag_1 && mode_change_flag_2) 
-  {
-    mode_2_offboard = true;
-    mode_change_flag_2 = false;
-  }
+      if(mode_change_flag_1 && mode_change_flag_2)
+      {
+        different_sp_rcv =true;
+        mode_change_flag_2 = false;
+      }
 
-  //use as timer, 1Hz
-  timer_counter += 1;
-  if(timer_counter > 5)
-  {
-    timer_counter = 0;
+      //use as timer, 1Hz
+      timer_counter += 1;
+      if(timer_counter > 5)
+      {
+        timer_counter = 0;
 
-    if(height_lidar_check_flag) 
-    {
-      height_lidar_check_flag = false;
-      height_lidar_running = true;
-    }
-    else
-    {
-      height_lidar_running = false;
-    }
+        if(height_lidar_check_flag)
+        {
+          height_lidar_check_flag = false;
+          height_lidar_running = true;
+        }
+        else
+        {
+          height_lidar_running = false;
+        }
 
-    if(obstacle_lidar_check_flag)
-    {
-      obstacle_lidar_check_flag = false;
-      obstacle_lidar_running = true;
-    }
-    else
-    {
-      obstacle_lidar_running = false;
-    } 
-  }
+        if(obstacle_lidar_check_flag)
+        {
+          obstacle_lidar_check_flag = false;
+          obstacle_lidar_running = true;
+        }
+        else
+        {
+          obstacle_lidar_running = false;
+        }
+      }
 }
 
 
@@ -741,7 +748,7 @@ float posPlan(float max_jerk, float max_acc, float t,
   }
   return pos;
 }
-
+/*
 void chatterCallback_extra_function(const mavros_extras::ExtraFunctionReceiver &msg)
 {
   if(msg.obs_avoid_enable != 0)  obstacle_avoid_enable = true;
@@ -752,7 +759,7 @@ void chatterCallback_extra_function(const mavros_extras::ExtraFunctionReceiver &
 
   if(msg.laser_height_enable == 1) laser_fly_height_enable = true;
   else laser_fly_height_enable = false;
-}
+}*/
 
 //Subscribe obstacle msg by CJ
 void chatterCallback_obstacle(const mavros_extras::LaserDistance &msg)
@@ -772,20 +779,21 @@ void chatterCallback_obstacle(const mavros_extras::LaserDistance &msg)
   if(direction.dot(obstacle_pos_local) > 0) fly_direction_enable = true;
   else fly_direction_enable = false;
 
-  if(obstacle_distance > 90.0 && obstacle_distance < 300.0){
-    if(obstacle_avoid_enable && obstacle_avoid_height_enable && obstacle_avoid_auto_enable && !auto_avoid_processing && fly_direction_enable && obstacle_lidar_running)  
+  if(obstacle_distance > 90.0 && obstacle_distance < 400.0)
+  {
+    if(obstacle_avoid_enable && obstacle_avoid_height_enable && obstacle_avoid_auto_enable && !auto_avoid_processing && fly_direction_enable )
       auto_avoid_processing = true;
-    else auto_avoid_processing = false;
-    if(obstacle_avoid_enable && obstacle_avoid_height_enable && !obstacle_avoid_auto_enable && fly_direction_enable && obstacle_lidar_running)
-    	manual_avoid = true;
+
+    if(obstacle_avoid_enable && obstacle_avoid_height_enable && !obstacle_avoid_auto_enable && fly_direction_enable)
+      manual_avoid = true;
     else manual_avoid = false;
-  }else{
-  	manual_avoid = false;
+  }else
+  {
+    manual_avoid = false;
   }
 
   obstacle_lidar_check_flag = true;
 }
-
 //Subscribe crop distance msg by CJ
 void chatterCallback_crop_distance(const std_msgs::Float32 &msg)
 {
@@ -803,6 +811,7 @@ void chatterCallback_crop_distance(const std_msgs::Float32 &msg)
   {
     if(fabs(laser_height_last - laser_height)<0.00001) height_lidar_running = false;
     else height_lidar_running = true;
+    ROS_INFO("laser_height %f!",laser_height);
 
     if(fabs(laser_height-6.0)<0.01)  height_lidar_running = true;
 
